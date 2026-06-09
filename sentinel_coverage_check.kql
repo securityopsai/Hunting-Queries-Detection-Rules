@@ -1,0 +1,160 @@
+// =====================================================================
+// Sentinel onboarding / telemetry coverage check
+// =====================================================================
+// Purpose : Given an authoritative list of expected hosts, determine which
+//           are emitting telemetry into the workspace and which are not.
+// Hosts   : 527 unique (normalized to short, lowercase hostname).
+// Match   : short hostname across Heartbeat / Syslog / CommonSecurityLog /
+//           DeviceInfo. Returns one row per device with Status + Feeds.
+//
+// CAVEAT - read before trusting the MISSING count:
+//   ~85% of this list is network / infrastructure gear (switches, OOB cards,
+//   SAN switches, 3PAR/XP storage, HSMs). These do NOT run the AMA agent;
+//   they ship syslog/CEF and frequently log by MANAGEMENT IP, not a
+//   resolvable hostname. Such devices can read as MISSING on a name join
+//   even while shipping logs. For Status=="MISSING" rows matching
+//   oob / sanswt / 3par / xp / hsm patterns, re-check against SourceIP /
+//   DeviceAddress in Syslog / CommonSecurityLog before declaring a real gap.
+//
+//   FortiGate/SD-WAN: confirm which CEF field carries the name with
+//     CommonSecurityLog | where DeviceVendor == "Fortinet"
+//     | distinct DeviceName, SourceHostName
+//   before relying on the DeviceName join.
+// =====================================================================
+
+let lookback = 24h;
+
+// --- authoritative expected list (short lowercase hostnames) ---------
+let expected = datatable(Computer:string)
+[
+    "dedutdapo0006", "defrapovl0134", "defrtdapo0149", "defrtdapo0150", "derlapopl0059", "derlapopl0099",
+    "derlapovl0596", "derltdcvs0002", "derltdcvsxa3607", "derltdcvsxa3622", "derltdcvsxa3606", "derltdcvsxa3608",
+    "derltdcvsxa3702", "derltdcvsxa3605", "defr8vwegagent01", "defr8vweglogon01", "derltdcvsxa3902", "derltdcvsxa3907",
+    "derltdcvsxa3908", "derltdcvsxa3909", "derltdcvsxa3910", "derltdcvsxa3911", "derltdcvsxa3912", "derltdcvsxa3913",
+    "derltdcvsxa3914", "derltdcvsxa3915", "derltdcvsxa3901", "derltdcvsxa3903", "derltdcvsxa3904", "deaachbcsw01-2",
+    "deaachboob1", "deaugewcsw01-2", "deaugewoob1", "debayspcsw01-2", "debayspoob1", "deberkscsw01",
+    "deberkscsw01-2", "deberksoob1", "deberrhcsw01-2", "deberrhoob1", "debieabcsw01-2", "debieaboob1",
+    "debocsrcsw01-2", "debocsroob1", "debongacsw01-2", "debongaoob1", "debrakscsw01-2", "debrakscsw01-3",
+    "debraksoob1", "debreshasw01-2", "debreshcsw01-2", "debreshoob1", "debrvanasw01", "debrvanoob1",
+    "dechechcsw01-2", "dechechoob1", "dedarrsasw01", "dedarrscsw01-2", "dedarrsoob1", "dedorakasw01-2",
+    "dedorakcsw01-2", "dedorakoob1", "dedremsasw01", "dedremsoob1", "dedreshasw01-2", "dedreshasw02-2",
+    "dedreshasw03-2", "dedreshcsw01-2", "dedreshcsw01-3", "dedreshoob1", "deduipwcsw01-2", "deduipwcsw01-3",
+    "deduipwoob1", "deduspaasw01-2", "deduspaasw01-3", "deduspaasw01-4", "deduspaasw02-2", "deduspaasw02-3",
+    "deduspaasw02-4", "deduspaasw03", "deduspaasw04", "deduspaasw05", "deduspaasw08-2", "deduspaasw11",
+    "deduspacsw01-2", "deduspacsw01-3", "deduspacsw01-4", "deduspaoob1", "deduspaoob2", "dedusromasw010-2",
+    "dedusromasw010-3", "dedusromasw040-2", "dedusromasw040-3", "dedusromasw041-2", "dedusromasw050-2", "dedusromasw050-3",
+    "fr2swclapo001", "fr2swclapo002", "fr2swclapo003", "fr2swslapo002", "fr2swmgmtapo001", "fr2swmgmtapo002",
+    "fr8swspapo001", "fr8swclapo001", "fr8swclapo002", "fr8swclapo003", "fr8swslapo002", "fr8swmgmtapo001",
+    "fr8swmgmtapo002", "dedusromasw061-2", "dedusromasw061-3", "dedusromasw070-2", "dedusromasw070-3", "dedusromasw071-2",
+    "dedusromasw075", "dedusromasw090-2", "dedusromasw110-2", "dedusromasw110-3", "dedusromasw120-2", "dedusromasw120-3",
+    "dedusromasw130-2", "dedusromasw130-3", "dedusromasw140-2", "dedusromasw140-3", "dedusromasw150-2", "dedusromasw150-3",
+    "dedusromasw210-2", "dedusromasw210-3", "dedusromasw220-2", "dedusromasw220-3", "dedusromasw230-2", "dedusromasw230-3",
+    "dedusromasw240-2", "dedusromasw240-3", "dedusromasw250-2", "dedusromasw250-3", "dedusromasw310-2", "dedusromasw310-3",
+    "dedusromasw320-2", "dedusromasw320-3", "dedusromasw330-2", "dedusromasw330-3", "dedusromasw340-2", "dedusromasw340-3",
+    "dedusromasw350-2", "dedusromasw350-3", "dedusromasw410-2", "dedusromasw410-3", "dedusromasw410-4", "dedusromasw420-2",
+    "dedusromasw420-3", "dedusromasw430-2", "dedusromasw430-3", "dedusromasw440-2", "dedusromasw440-3", "dedusromasw510-2",
+    "dedusromasw510-3", "dedusromasw520-2", "dedusromasw520-3", "dedusromasw530-2", "dedusromasw540-2", "dedusromasw610-2",
+    "dedusromasw620-2", "dedusromasw630-2", "dedusromcsw01", "dedusromcsw01-2", "dedusromoob1", "dedusromoob2",
+    "dedusromoob3", "dedussiiiasw090-2", "dedussiiiasw091", "dedussiiiasw110-2", "dedussiiiasw120-2", "dedussiiiasw130-2",
+    "dedussiiiasw140-2", "dedussiiiasw170-2", "dedussiiiasw171-2", "dedussiiiasw175", "dedussiiiasw210-2", "dedussiiiasw220-2",
+    "dedussiiiasw230-2", "dedussiiiasw240-2", "dedussiiiasw310-2", "dedussiiiasw540-2", "dedussiiicsw01", "dedussiiicsw01-2",
+    "dedussiiioob1", "dedussiiioob2", "dedusstlanapo01a", "dedustsr01", "deedcswclapo001a", "deedcswclapo002a",
+    "deedcswclapo003a", "deedcswsdx001a", "deedcswsdx003", "deedcswsdx003a", "deedcswsdx006", "deedcswsdx006a",
+    "deedcswtspapo001", "deedcswtspapo001a", "deeisswclapo001", "deeisswclapo001a", "deeisswclapo002a", "deeisswclapo003",
+    "deeisswclapo003a", "deeisswsdxapo001a", "deeisswsdxapo002", "deeisswsdxapo002a", "deeisswsdxapo004", "deeisswsdxapo004a",
+    "deeisswsdxapo005", "deeisswsdxapo005a", "deeisswtspapo001", "deeisswtspapo001a", "deerftncsw01-2", "deerftnoob1",
+    "deerlspasw01", "deerlspoob1", "deesspkasw01-2", "deesspkcsw01-2", "deesspkoob1", "defr2intswapo001a",
+    "defr2swclapo004a", "defr2swconapo01", "defr2swslapo001a", "defr8swclapo004", "defr8swclapo004a", "defr8swconapo01",
+    "defr8swintapo001", "defr8swintapo001a", "defr8swslapo001a", "deframlasw01-2", "deframlasw02-2", "deframlasw03-2",
+    "deframlcsw01", "deframlcsw01-2", "deframloob1", "defratsasw01", "defratsoob1", "defresacsw01-2",
+    "defresaoob1", "defriwscsw01-2", "defriwsoob1", "defrtdapo0206", "defrtdapo0207", "defrtdapo0208",
+    "degielsasw01", "degielscsw01-2", "degielsoob1", "degotbscsw01-2", "degotbsoob1", "dehamwsasw01-2",
+    "dehamwscsw01-2", "dehamwscsw01-3", "dehamwsoob1", "dehanakasw01-2", "dehanakasw02-2", "dehanakcsw01-2",
+    "dehanakcsw01-3", "dehanakoob1", "dehanksasw01-2", "dehankscsw01-2", "dehankscsw01-3", "dehanksoob1",
+    "dehanvwasw01-2", "dehanvwasw01-3", "dehanvwasw02-2", "dehanvwasw03", "dehanvwcsw01-2", "dehanvwoob1",
+    "deheblscsw01-2", "deheblsoob1", "deheikfcsw01-2", "deheikfoob1", "deinglsasw01", "deinglsoob1",
+    "dejenksasw01", "dejenksoob1", "dejenlgcsw01-2", "dejenlgoob1", "dekarlecsw01-2", "dekarleoob1",
+    "dekaskscsw01-2", "dekasksoob1", "dekiehscsw01-2", "dekiehsoob1", "dekobjhcsw01-2", "dekobjhoob1",
+    "dekol34asw01-2", "dekol34csw01-2", "dekol34oob1", "delanlgasw01", "delanlgoob1", "deleirwcsw01-2",
+    "deleirwcsw01-3", "deleirwoob1", "delinwsasw01", "delinwsoob1", "delubmacsw01-2", "delubmaoob1",
+    "demagdecsw01-2", "demagdeoob1", "demaiflcsw01-2", "demaifloob1", "demanjbasw01-2", "demanjbasw04",
+    "demanjbcsw01-2", "demanjboob1", "demucbsasw01-2", "demucbsasw03-2", "demucbscsw01", "demucbscsw01-2",
+    "demucbsoob1", "demungscsw01-2", "demungscsw01-3", "demungsoob1", "deneuescsw01-2", "deneuesoob1",
+    "denurdscsw01-2", "denurdsoob1", "deoldstasw01-2", "deoldstcsw01-2", "deoldstoob1", "deosnabcsw01-2",
+    "deosnaboob1", "depasbhcsw01-2", "depasbhoob1", "depothacsw01-2", "depothacsw01-3", "depothaoob1",
+    "deregysasw02", "deregysasw03", "deregyscsw01-2", "deregysoob1", "derohbhasw01", "derohbhcsw01-2",
+    "derohbhoob1", "derosabcsw01-2", "derosaboob1", "desaapscsw01", "desaapsoob1", "deschwscsw01-2",
+    "deschwsoob1", "destuasasw01-2", "destuascsw01-2", "destuasoob1", "detribscsw01-2", "detribsoob1",
+    "detubhbasw01", "detubhbcsw01-2", "detubhboob1", "deulmkscsw01-2", "deulmksoob1", "devilasasw01",
+    "devilasoob1", "dewiewbcsw01-2", "dewiewboob2", "dewupomcsw01-2", "dewupomoob1", "dewurssasw01-2",
+    "dewursscsw01-2", "dewurssoob1", "deedcgwapo0003", "deedcgwapo0004", "deeisgwapo0003", "dedsdfapo00001",
+    "dedsdfapo00002", "dedsdfapo00003", "dedsdfapo00004", "deaacfbsdwan1", "defratssdwan1", "dejenkssdwan1",
+    "deaachbsdwan0", "deaugewsdwan0", "debayspsdwan0", "deberkssdwan0", "deberrhsdwan0", "debieabsdwan0",
+    "debocsrsdwan0", "debongasdwan0", "debrakssdwan0", "debreshsdwan0", "dechechsdwan0", "dedarrssdwan0",
+    "deduipwsdwan0", "deerftnsdwan0", "deesspksdwan0", "defresasdwan0", "defriwssdwan0", "degielssdwan0",
+    "degotbssdwan0", "dehamwssdwan0", "deheblssdwan0", "deheikfsdwan0", "deheikfsdwan1", "deheikfsdwan2",
+    "dejenlgsdwan0", "dekarlesdwan0", "dekasmssdwan0", "dekasmssdwan1", "dekasmssdwan2", "dekiehssdwan0",
+    "dekobjhsdwan0", "delubmasdwan0", "demagdesdwan0", "demaiflsdwan0", "demanjbsdwan0", "demucbssdwan0",
+    "deneuessdwan0", "denurdssdwan0", "deoldstsdwan0", "deosnabsdwan0", "depasbhsdwan0", "depothasdwan0",
+    "deregyssdwan0", "derohbhsdwan0", "derosabsdwan0", "desaapssdwan0", "deschwssdwan0", "deschwssdwan1",
+    "deschwssdwan2", "detribssdwan0", "detubhbsdwan0", "deulmkssdwan0", "dewiewbsdwan0", "dewupomsdwan0",
+    "dewursssdwan0", "dedorklsdwan0", "dedreshsdwan0", "deframlsdwan0", "dehanaksdwan0", "dehankssdwan0",
+    "dehanvwsdwan0", "dekol34sdwan0", "dekol34sdwan1", "dekol34sdwan2", "deleirwsdwan0", "demungssdwan0",
+    "denurdssdwan2", "destuassdwan0", "deduspasdwan0", "dedusromsdwan0", "dedusscsdwan0", "dedusscsdwan1",
+    "dedusscsdwan2", "dehsslgapo0002", "defr2vfganz01", "defr8vfganz01", "defr2vfgmgr01", "defr8vfgmgr01",
+    "dehssdfapo0001", "dehsssmapo0001", "deedcgwapovm0002", "deeisgwapovm0002", "dehssgwapovm0002", "defrtdapo0537",
+    "derltdapo0495", "deedc1pxapo1001", "deeis1pxapo1001", "deedc1avapo1001", "deeis1avapo1001", "deedcscapo0001",
+    "deedcrpapo0001", "ps10k_rue", "ps10k_fra", "ps10k_uat", "fractmhsm", "ruectmhsm",
+    "derltdapo0477", "defrtdapo0517", "defrmgw001", "derlmgw001", "defrtdsems001", "derltdsems001",
+    "defrtdapo0203", "derltdapo0203", "derltdapo0192", "defrapovl0472", "defrtdapo0202", "derltdapo0202",
+    "defr2pwvau01", "defr8pwvau01", "defr2vwdvau01", "f2p0bckpp001", "f2p0bckpp002", "f8p0bckpp001",
+    "f8p0bckpp002", "defr3par001", "defr3parsp001", "defr3par002", "defr3parsp002", "defr3par003",
+    "defr3parsp003", "derl3par001", "derl3parsp001", "derl3par002", "derl3parsp002", "derl3par003",
+    "derl3parsp003", "defrssmc002", "defrxp001", "derlxp001", "ism", "dedumsa001n1",
+    "fr2prdzhpass001", "fr8prdzhpass001", "dedumsa002n1", "defrsanswt21", "defrsanswt22", "derlsanswt21",
+    "derlsanswt22", "defrsanswt01", "defrsanswt05", "defrsanswt17", "derlsanswt05", "derlsanswt07",
+    "derlsanswt13", "derlsanswt15", "defrsanswt03", "defrsanswt06", "defrsanswt12", "defrsanswt18",
+    "derlsanswt06", "derlsanswt08", "defrsanswt07", "derlsanswt14", "derlsanswt16"
+];
+
+// --- what is actually emitting telemetry, normalized to short name ---
+let seen = union isfuzzy=true
+    (Heartbeat
+        | where TimeGenerated > ago(lookback)
+        | extend Computer = tolower(tostring(split(Computer, ".")[0]))
+        | distinct Computer, Feed = "Heartbeat"),
+    (Syslog
+        | where TimeGenerated > ago(lookback)
+        | extend Computer = tolower(tostring(split(Computer, ".")[0]))
+        | distinct Computer, Feed = "Syslog"),
+    (CommonSecurityLog
+        | where TimeGenerated > ago(lookback)
+        | extend RawName = coalesce(DeviceName, SourceHostName, Computer)
+        | extend Computer = tolower(tostring(split(RawName, ".")[0]))
+        | where isnotempty(Computer)
+        | distinct Computer, Feed = "CommonSecurityLog"),
+    (DeviceInfo
+        | where TimeGenerated > ago(lookback)
+        | extend Computer = tolower(tostring(split(DeviceName, ".")[0]))
+        | distinct Computer, Feed = "DeviceInfo");
+
+let seenAgg = seen
+    | summarize Feeds = strcat_array(make_set(Feed), ", ") by Computer;
+
+// --- per-device result: PRESENT/MISSING + which feed(s) --------------
+expected
+| join kind=leftouter seenAgg on Computer
+| extend Status = iff(isempty(Feeds), "MISSING", "PRESENT")
+| project Computer, Status, Feeds
+| sort by Status asc, Computer asc
+
+// =====================================================================
+// SUMMARY VARIANT - swap in for the headcount instead of per-device rows:
+//
+// expected
+// | join kind=leftouter seenAgg on Computer
+// | extend Status = iff(isempty(Feeds), "MISSING", "PRESENT")
+// | summarize Devices = count() by Status
+// | extend Total = toscalar(expected | count)
+// | extend Pct = round(100.0 * Devices / Total, 1)
+// =====================================================================
