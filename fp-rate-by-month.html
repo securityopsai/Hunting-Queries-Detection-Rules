@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>False Positive Rate by Month</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0;
+    background: #f9f9f7;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: #0b0b0b;
+    display: flex;
+    justify-content: center;
+    padding: 32px 16px;
+  }
+  .viz-root {
+    --surface-1:      #fcfcfb;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --gridline:       #e1e0d9;
+    --baseline:       #c3c2b7;
+    --series-1:       #2a78d6;
+    --good:           #006300;
+    --border:         rgba(11,11,11,0.10);
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 30px 22px;
+    width: 100%;
+    max-width: 780px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #0d0d0d; color: #fff; }
+    .viz-root {
+      --surface-1:      #1a1a19;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --gridline:       #2c2c2a;
+      --baseline:       #383835;
+      --series-1:       #3987e5;
+      --good:           #0ca30c;
+      --border:         rgba(255,255,255,0.10);
+    }
+  }
+  .viz-title { font-size: 17px; font-weight: 650; margin: 0 0 2px; color: var(--text-primary); }
+  .viz-sub   { font-size: 13px; margin: 0 0 18px; color: var(--text-secondary); }
+  .viz-sub b { color: var(--good); font-weight: 650; }
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .grid line { stroke: var(--gridline); stroke-width: 1; }
+  .baseline  { stroke: var(--baseline); stroke-width: 1; }
+  .ytick, .xtick { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .barlabel { fill: var(--text-secondary); font-size: 10.5px; font-variant-numeric: tabular-nums; text-anchor: middle; font-weight: 600; }
+  .bar { fill: var(--series-1); transition: opacity .12s; }
+  .bar:hover { opacity: .82; }
+  .hit { fill: transparent; cursor: default; }
+  .note { font-size: 11.5px; color: var(--text-muted); margin: 16px 0 0; line-height: 1.45; }
+  .tip {
+    position: fixed; pointer-events: none; opacity: 0;
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 10px; font-size: 12px;
+    color: var(--text-primary); box-shadow: 0 2px 10px rgba(0,0,0,0.14);
+    transition: opacity .1s; white-space: nowrap; z-index: 10;
+  }
+  .tip .tm { color: var(--text-secondary); font-size: 11px; }
+  .tip .tv { font-weight: 700; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="viz-root">
+  <p class="viz-title">False Positive Rate by Month</p>
+  <p class="viz-sub">Weekly FP ratio averaged per month — collapsed from ~99% to <b>near 0%</b> over the tuning window (Jun 2025 → Jun 2026).</p>
+  <svg id="chart" viewBox="0 0 720 300" role="img" aria-label="False positive rate by month, declining from 99 percent to near zero"></svg>
+  <p class="note" id="note"></p>
+</div>
+<div class="tip" id="tip"></div>
+<script>
+// Reconstructed monthly FP% from the described trend. Replace `data` with the
+// exact monthly averages from the source table and the chart re-renders.
+const data = [
+  { m: "Jun 25", v: 99 },
+  { m: "Jul 25", v: 92 },
+  { m: "Aug 25", v: 85 },
+  { m: "Sep 25", v: 72 },
+  { m: "Oct 25", v: 55 },
+  { m: "Nov 25", v: 28 },
+  { m: "Dec 25", v: 9  },
+  { m: "Jan 26", v: 6  },
+  { m: "Feb 26", v: 4  },
+  { m: "Mar 26", v: 3  },
+  { m: "Apr 26", v: 1.5},
+  { m: "May 26", v: 0.5},
+  { m: "Jun 26", v: 0  },
+];
+
+const W = 720, H = 300;
+const M = { top: 22, right: 12, bottom: 34, left: 40 };
+const iw = W - M.left - M.right;
+const ih = H - M.top - M.bottom;
+const yMax = 100;
+const y = v => M.top + ih - (v / yMax) * ih;
+const NS = "http://www.w3.org/2000/svg";
+const svg = document.getElementById("chart");
+const tip = document.getElementById("tip");
+
+function el(name, attrs, text) {
+  const n = document.createElementNS(NS, name);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (text != null) n.textContent = text;
+  return n;
+}
+
+// gridlines + y ticks
+const grid = el("g", { class: "grid" });
+[0, 25, 50, 75, 100].forEach(t => {
+  grid.appendChild(el("line", { x1: M.left, x2: W - M.right, y1: y(t), y2: y(t) }));
+  grid.appendChild(el("text", { class: "ytick", x: M.left - 8, y: y(t) + 4, "text-anchor": "end" }, t + "%"));
+});
+svg.appendChild(grid);
+
+// bars
+const n = data.length;
+const slot = iw / n;
+const bw = Math.min(38, slot - 8);        // 2px+ surface gap between bars
+const r = 4;                               // rounded data-end
+
+data.forEach((d, i) => {
+  const cx = M.left + slot * i + slot / 2;
+  const x = cx - bw / 2;
+  const top = y(d.v);
+  const base = y(0);
+  const h = Math.max(base - top, 0.5);
+  // rounded top, square base — anchored to baseline
+  const rr = Math.min(r, h);
+  const path = `M${x},${base} L${x},${top + rr} Q${x},${top} ${x + rr},${top} L${x + bw - rr},${top} Q${x + bw},${top} ${x + bw},${top + rr} L${x + bw},${base} Z`;
+  svg.appendChild(el("path", { class: "bar", d: path }));
+
+  // direct value label
+  const lbl = d.v === 0 ? "0" : (d.v < 1 ? d.v.toFixed(1) : Math.round(d.v));
+  svg.appendChild(el("text", { class: "barlabel", x: cx, y: top - 6 }, lbl + "%"));
+
+  // x label
+  svg.appendChild(el("text", { class: "xtick", x: cx, y: H - M.bottom + 16, "text-anchor": "middle" }, d.m));
+
+  // hover hit area
+  const hit = el("rect", { class: "hit", x: M.left + slot * i, y: M.top, width: slot, height: ih });
+  hit.addEventListener("mousemove", e => {
+    tip.innerHTML = `<div class="tm">${d.m}</div><div class="tv">${d.v}% FP</div>`;
+    tip.style.opacity = 1;
+    tip.style.left = (e.clientX + 14) + "px";
+    tip.style.top  = (e.clientY - 10) + "px";
+  });
+  hit.addEventListener("mouseleave", () => tip.style.opacity = 0);
+  svg.appendChild(hit);
+});
+
+// baseline
+svg.appendChild(el("line", { class: "baseline", x1: M.left, x2: W - M.right, y1: y(0), y2: y(0) }));
+
+document.getElementById("note").textContent =
+  "Note: monthly values are reconstructed from the trend described in the thread " +
+  "(the source table's raw FP% column had misplaced decimals — e.g. 9875.00 meaning 98.75% — " +
+  "which is what blew out the original column chart). Swap the exact monthly averages into the data array to finalize.";
+</script>
+</body>
+</html>
